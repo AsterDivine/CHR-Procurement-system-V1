@@ -1,0 +1,6 @@
+{
+  "name": "CHR-CAR Centralized Procurement & Financial Tracker",
+  "description": "Centralized Procurement Tracking and Financial Monitoring System for CHR-CAR capstone prototype.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

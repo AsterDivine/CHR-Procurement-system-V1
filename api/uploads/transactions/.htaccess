@@ -1,0 +1,7 @@
+# Prevent directory index listing and disable script execution in uploads
+Options -Indexes
+
+<FilesMatch "(?i)\.(php|php3|php4|php5|phtml|phar|pl|py|cgi|asp|js|sh)$">
+    Order Deny,Allow
+    Deny from all
+</FilesMatch>
