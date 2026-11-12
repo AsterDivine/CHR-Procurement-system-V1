@@ -4,27 +4,36 @@
  * File: src/services/api.js
  * =============================================================================
  * 
- * Reusable API Service Layer.
- * - Handles all HTTP requests to the PHP/Apache backend using fetch().
- * - Automatically attaches credentials: 'include' so PHP session cookies
- *   (PHPSESSID) are sent across origins (e.g. localhost:5173 to localhost:80).
- * - Standardizes error handling and JSON parsing.
+ * Central API Service Layer for the 50% Working-System Prototype.
+ * - Handles all HTTP requests between the React frontend and pure PHP backend.
+ * - Uses the native browser fetch() API with standard JSON encoding.
+ * - Connects directly to PHP PDO endpoints (no fake offline mock data).
+ * 
+ * NOTE FOR CAPSTONE DEFENSE:
+ * In this 50% prototype, authentication (login/registration/sessions) is temporarily
+ * out of scope. Requests do not require bearer tokens or session cookies.
  */
 
-// Base URL for the PHP API on Apache/XAMPP.
-// Can be customized via VITE_API_URL in .env if running on a different port/folder.
-export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost/chr-procurement-system/api';
+// Base URL for the pure PHP backend.
+// As instructed: "Keep the API URLs flexible so the frontend can connect to:
+// • http://localhost:8000/api (built-in PHP development server: php -S localhost:8000)
+// • or http://localhost/chr-procurement-system/api (XAMPP / Apache)"
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
 /**
- * Generic request wrapper using fetch()
+ * Generic fetch wrapper for HTTP requests with automatic JSON parsing and error handling.
+ * Used by: All export functions in api.js.
+ * Connects to: PHP backend endpoints under /api/procurements/.
+ * Database table affected: None (generic network transport layer).
+ *
+ * @param {string} endpoint - The relative API path (e.g., '/procurements/get_procurements.php').
+ * @param {object} options  - Standard fetch options (method, headers, body).
+ * @returns {Promise<any>} Parsed response data payload from PHP.
+ * @throws {Error} Descriptive error on network failure or HTTP non-2xx status.
  */
-async function request(endpoint, options = {}) {
+async function sendRequest(endpoint, options = {}) {
   const url = `${API_BASE_URL}${endpoint}`;
-
-  // Default configuration
   const config = {
-    // CRITICAL: Always include cookies for session-based authentication
-    credentials: 'include',
     ...options,
     headers: {
       Accept: 'application/json',
@@ -32,102 +41,209 @@ async function request(endpoint, options = {}) {
     },
   };
 
+  let response;
   try {
-    const response = await fetch(url, config);
-    const data = await response.json();
-
-    if (!response.ok || data.success === false) {
-      const errorMsg = data.message || `Request failed with status ${response.status}`;
-      const error = new Error(errorMsg);
-      error.status = response.status;
-      error.data = data.data || null;
-      throw error;
-    }
-
-    return data;
-  } catch (err) {
-    // If server is unreachable (e.g. XAMPP is not running)
-    if (err.name === 'TypeError' && err.message.includes('fetch')) {
-      const connErr = new Error(
-        'Unable to connect to backend. Please ensure Apache and MySQL are running in XAMPP at ' + API_BASE_URL
-      );
-      connErr.status = 0;
-      throw connErr;
-    }
-    throw err;
+    response = await fetch(url, config);
+  } catch (netErr) {
+    // Network level error (e.g. backend server is not running or CORS blocked)
+    const connError = new Error(
+      `Cannot connect to PHP backend at ${url}. Please verify that the PHP development server is running (e.g. 'php -S localhost:8000' or XAMPP Apache) and MySQL is active.`
+    );
+    connError.original = netErr;
+    throw connError;
   }
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (jsonErr) {
+    throw new Error(`Invalid JSON response from ${url} (HTTP ${response.status}).`);
+  }
+
+  if (!response.ok || data.success === false) {
+    const errorMsg = data.message || `HTTP error ${response.status}`;
+    const error = new Error(errorMsg);
+    error.status = response.status;
+    error.data = data.data || null;
+    throw error;
+  }
+
+  return data.data;
 }
 
-export const api = {
-  // --- HTTP Helpers ---
-  get: (endpoint) => request(endpoint, { method: 'GET' }),
+/**
+ * Loads all procurement records from the PHP backend, with optional status filter.
+ * Used by: ProcurementTable.jsx, CHRDashboard.jsx, and BidderOpportunities.jsx.
+ * Connects to: Endpoint /api/procurements/get_procurements.php
+ * Database tables affected: Reads from 'procurements', 'bids', and 'procurement_items'.
+ *
+ * @param {string} status - Optional status filter (e.g. 'Published / Open', 'Awarded').
+ * @returns {Promise<Array>} List of procurement objects from MySQL.
+ */
+export async function loadProcurements(status = '') {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  const data = await sendRequest(`/procurements/get_procurements.php${query}`);
+  return data.procurements || [];
+}
 
-  post: (endpoint, body) =>
-    request(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }),
+/**
+ * Loads a single procurement record with specification line items, submitted bids, and audit trail.
+ * Used by: ProcurementDetails.jsx and ProcurementForm.jsx (Edit Mode).
+ * Connects to: Endpoint /api/procurements/get_procurement.php?id=X
+ * Database tables affected: Reads from 'procurements', 'procurement_items', 'bids', and 'transaction_history'.
+ *
+ * @param {number|string} id - Procurement primary key ID in MySQL.
+ * @returns {Promise<object>} Complete procurement detail object.
+ */
+export async function loadProcurementDetails(id) {
+  const data = await sendRequest(`/procurements/get_procurement.php?id=${id}`);
+  return data.procurement;
+}
 
-  // Handles multipart/form-data for file uploads (browser sets boundary automatically)
-  postFormData: (endpoint, formData) =>
-    request(endpoint, {
-      method: 'POST',
-      body: formData,
-    }),
+/**
+ * Creates a new master procurement record and its attached item specifications.
+ * Used by: ProcurementForm.jsx (Create Mode).
+ * Connects to: Endpoint /api/procurements/create_procurement.php
+ * Database tables affected: Writes to 'procurements', 'procurement_items', and 'transaction_history'.
+ *
+ * @param {object} payload - Procurement fields (reference_number, title, abc, deadline, etc.) and items array.
+ * @returns {Promise<object>} Result containing the new procurement_id.
+ */
+export async function createProcurement(payload) {
+  const data = await sendRequest('/procurements/create_procurement.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return data;
+}
 
-  // --- Authentication Endpoints ---
-  login: (email, password) => api.post('/auth/login.php', { email, password }),
-  registerBidder: (data) => api.post('/auth/register_bidder.php', data),
-  logout: () => api.post('/auth/logout.php', {}),
-  getMe: () => api.get('/auth/me.php'),
+/**
+ * Updates an existing procurement record and replaces its line items.
+ * Used by: ProcurementForm.jsx (Edit Mode).
+ * Connects to: Endpoint /api/procurements/update_procurement.php
+ * Database tables affected: Updates 'procurements', writes to 'procurement_items' and 'transaction_history'.
+ *
+ * @param {object} payload - Updated procurement fields including id and items array.
+ * @returns {Promise<object>} Result confirmation.
+ */
+export async function updateProcurement(payload) {
+  const data = await sendRequest('/procurements/update_procurement.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return data;
+}
 
-  // --- Opportunity Endpoints ---
-  getOpenOpportunities: () => api.get('/opportunities/list_open.php'),
-  getOpportunity: (id) => api.get(`/opportunities/get.php?id=${id}`),
+/**
+ * Updates a procurement's workflow status and statutory stage under R.A. 9184.
+ * Used by: ProcurementStatusTracker.jsx and ProcurementTable.jsx.
+ * Connects to: Endpoint /api/procurements/update_status.php
+ * Database tables affected: Updates 'procurements', writes to 'transaction_history'.
+ *
+ * @param {object} payload - Object containing id, status, current_stage, and remarks.
+ * @returns {Promise<object>} Result confirmation.
+ */
+export async function updateProcurementStatus(payload) {
+  const data = await sendRequest('/procurements/update_status.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return data;
+}
 
-  // --- Bidder Endpoints ---
-  submitBid: (formData) => api.postFormData('/bids/submit.php', formData),
-  getMyBids: () => api.get('/bids/my_bids.php'),
-  getMyBid: (id) => api.get(`/bids/get_my_bid.php?id=${id}`),
-  getDownloadDocumentUrl: (id) => `${API_BASE_URL}/bids/download_document.php?id=${id}`,
+/**
+ * Submits an official price quotation from a prospective supplier/bidder without login.
+ * Used by: BidderQuotationForm.jsx.
+ * Connects to: Endpoint /api/procurements/create_bid.php
+ * Database tables affected: Writes to 'bids' and 'transaction_history'. Reads from 'procurements'.
+ *
+ * @param {object} payload - Bidder details (company name, contact, email) and bid_amount.
+ * @returns {Promise<object>} Result containing the new bid_id.
+ */
+export async function submitBidQuotation(payload) {
+  const data = await sendRequest('/procurements/create_bid.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return data;
+}
 
-  // --- CHR Endpoints ---
-  getCHROpportunities: (status = '') =>
-    api.get(`/opportunities/list_chr.php${status ? `?status=${status}` : ''}`),
-  createOpportunity: (data) => api.post('/opportunities/create.php', data),
-  updateOpportunity: (data) => api.post('/opportunities/update.php', data),
-  changeOpportunityStatus: (id, targetStatus) =>
-    api.post('/opportunities/change_status.php', { id, target_status: targetStatus }),
+/**
+ * Loads all submitted bidder quotations, optionally filtered by procurement project.
+ * Used by: CHRBids.jsx, CHRBidTable.jsx, and BidderSubmittedQuotations.jsx.
+ * Connects to: Endpoint /api/procurements/get_bids.php?procurement_id=X
+ * Database tables affected: Reads from 'bids' joined with 'procurements'.
+ *
+ * @param {number|string} procurementId - Optional procurement ID filter.
+ * @returns {Promise<Array>} List of submitted bids with calculated potential savings.
+ */
+export async function loadBids(procurementId = '') {
+  const query = procurementId ? `?procurement_id=${procurementId}` : '';
+  const data = await sendRequest(`/procurements/get_bids.php${query}`);
+  return data.bids || [];
+}
 
-  getOpportunityBids: (opportunityId) =>
-    api.get(`/bids/list_for_opportunity.php?opportunity_id=${opportunityId}`),
-  updateBidStatus: (bidId, status, remarks = '') =>
-    api.post('/bids/update_status.php', { bid_id: bidId, status, remarks }),
+/**
+ * Selects a winning bid quotation, automatically calculates savings (ABC - Awarded Price),
+ * updates project stage to "Notice of Award", and logs the award event.
+ * Used by: CHRBids.jsx and CHRBidTable.jsx.
+ * Connects to: Endpoint /api/procurements/select_bid.php
+ * Database tables affected: Updates 'bids' and 'procurements', writes to 'transaction_history'.
+ *
+ * @param {number|string} bidId   - Selected winning bid primary key ID.
+ * @param {string}        remarks - Justification or BAC resolution notes.
+ * @returns {Promise<object>} Updated financial details (awarded_amount, savings, status).
+ */
+export async function selectWinningBid(bidId, remarks = '') {
+  const data = await sendRequest('/procurements/select_bid.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bid_id: bidId, remarks }),
+  });
+  return data;
+}
 
-  getTransactions: (stage = '') =>
-    api.get(`/transactions/list.php${stage ? `?stage=${stage}` : ''}`),
-  getTransaction: (id) => api.get(`/transactions/get.php?id=${id}`),
-  createTransactionFromOpportunity: (data) =>
-    api.post('/transactions/create_from_opportunity.php', data),
-  updateTransactionStage: (id, stage, remarks = '') =>
-    api.post('/transactions/update_stage.php', { id, stage, remarks }),
-  updateTransactionFinancials: (data) =>
-    api.post('/transactions/update_financials.php', data),
-  uploadTransactionDocument: (formData) =>
-    api.postFormData('/transactions/upload_document.php', formData),
-  getTransactionHistory: (id) => api.get(`/transactions/history.php?id=${id}`),
+/**
+ * Loads aggregated regional procurement financial totals and individual project metrics.
+ * Used by: SimpleFinancialMonitoring.jsx.
+ * Connects to: Endpoint /api/procurements/get_financial_summary.php
+ * Database tables affected: Reads from 'procurements' and 'bids'.
+ *
+ * @returns {Promise<object>} Totals (total ABC, awarded, savings) and project breakdown.
+ */
+export async function loadFinancialSummary() {
+  const data = await sendRequest('/procurements/get_financial_summary.php');
+  return data;
+}
 
-  // --- Budgets & Reports ---
-  getBudgetList: () => api.get('/budgets/list.php'),
-  getBudgetSummary: () => api.get('/budgets/summary.php'),
-  getDashboardSummary: () => api.get('/reports/dashboard_summary.php'),
-  getProcurementReport: (params = '') =>
-    api.get(`/reports/procurement_report.php${params ? `?${params}` : ''}`),
-  getExportCsvUrl: (params = '') =>
-    `${API_BASE_URL}/reports/export_csv.php${params ? `?${params}` : ''}`,
-  getAuditLogs: (params = '') =>
-    api.get(`/reports/audit_logs.php${params ? `?${params}` : ''}`),
-  search: (query) => api.get(`/search/global_search.php?q=${encodeURIComponent(query)}`),
-};
+/**
+ * Loads the chronological transaction audit history from the backend.
+ * Used by: TransactionHistoryView.jsx and ProcurementDetails.jsx.
+ * Connects to: Endpoint /api/procurements/get_history.php?procurement_id=X
+ * Database tables affected: Reads from 'transaction_history' and 'procurements'.
+ *
+ * @param {number|string} procurementId - Optional procurement filter.
+ * @returns {Promise<Array>} List of transaction history records.
+ */
+export async function loadTransactionHistory(procurementId = '') {
+  const query = procurementId ? `?procurement_id=${procurementId}` : '';
+  const data = await sendRequest(`/procurements/get_history.php${query}`);
+  return data.logs || [];
+}
 
+/**
+ * Loads KPI dashboard metrics, recent procurements, and recent history logs.
+ * Used by: CHRDashboard.jsx.
+ * Connects to: Endpoint /api/procurements/get_dashboard_summary.php
+ * Database tables affected: Reads from 'procurements', 'bids', and 'transaction_history'.
+ *
+ * @returns {Promise<object>} Dashboard KPI counts, recent projects, and recent activity.
+ */
+export async function loadDashboardSummary() {
+  const data = await sendRequest('/procurements/get_dashboard_summary.php');
+  return data;
+}
