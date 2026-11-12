@@ -58,37 +58,6 @@ export default function Home() {
         </p>
       </header>
 
-      {/* MANDATORY PROTOTYPE ACCESS CONTROL NOTICE */}
-      <section
-        role="alert"
-        aria-label="Development Stage Disclaimer"
-        style={{
-          backgroundColor: '#fef3c7',
-          borderLeft: '5px solid #d97706',
-          borderRight: '1px solid #fde68a',
-          borderTop: '1px solid #fde68a',
-          borderBottom: '1px solid #fde68a',
-          padding: '16px 20px',
-          borderRadius: '6px',
-          marginBottom: '32px',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
-          <span style={{ fontSize: '20px', lineHeight: 1 }} aria-hidden="true">&#9888;</span>
-          <div>
-            <strong style={{ color: '#92400e', fontSize: '14px', display: 'block', marginBottom: '4px' }}>
-              Prototype Scope Notice
-            </strong>
-            <p style={{ margin: 0, color: '#78350f', fontSize: '13.5px', lineHeight: 1.5 }}>
-              <strong>Prototype only &mdash; authentication and final access control will be implemented in a later development stage.</strong>
-            </p>
-            <p style={{ margin: '6px 0 0 0', color: '#92400e', fontSize: '12px' }}>
-              For this 50% defense, login, user registration, and sessions are temporarily out of scope. Evaluators can directly access both user roles below.
-            </p>
-          </div>
-        </div>
-      </section>
 
       {/* PROTOTYPE VIEW SELECTOR: 2 PRIMARY ROLES */}
       <section aria-labelledby="select-view-title" style={{ marginBottom: '36px' }}>

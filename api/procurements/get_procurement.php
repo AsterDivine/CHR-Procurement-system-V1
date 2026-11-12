@@ -6,8 +6,8 @@
  * =============================================================================
  * 
  * Retrieves full details for a single procurement record by ID.
- * Returns the procurement master record, line items, submitted bidder quotations,
- * and chronological transaction history for audit transparency.
+ * Uses pure PHP MySQLi prepared statements.
+ * Queries the 3 core tables: `procurements`, `bids`, and `transaction_history`.
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -20,31 +20,35 @@ require_once __DIR__ . '/../helpers/response.php';
  * Connects to: Endpoint /api/procurements/get_procurement.php?id=X
  * Database table affected: Reads from 'procurements'.
  *
- * @param PDO $pdo Active database connection.
- * @param int $id  Procurement primary key ID.
+ * @param mysqli $conn Active MySQLi database connection.
+ * @param int    $id   Procurement primary key ID.
  * @return array|null Procurement record or null if not found.
  */
-function fetchProcurementById($pdo, $id) {
-    // Selects the master record from procurements table
-    $stmt = $pdo->prepare('
+function fetchProcurementById($conn, $id) {
+    $stmt = $conn->prepare('
         SELECT 
             p.*,
-            wb.bidder_name AS awarded_bidder_name,
-            wb.representative_name AS awarded_representative_name,
-            wb.email AS awarded_email,
-            wb.contact_number AS awarded_contact
+            p.reference_no AS reference_number,
+            p.procurement_type AS procurement_mode,
+            (SELECT b.company_name FROM bids b WHERE b.procurement_id = p.id AND b.status = "Selected" LIMIT 1) AS awarded_bidder_name,
+            (SELECT b.bidder_name FROM bids b WHERE b.procurement_id = p.id AND b.status = "Selected" LIMIT 1) AS awarded_representative_name
         FROM procurements p
-        LEFT JOIN bids wb ON p.awarded_bid_id = wb.id
         WHERE p.id = ?
         LIMIT 1
     ');
-    $stmt->execute([$id]);
-    $procurement = $stmt->fetch();
+    if (!$stmt) {
+        return null;
+    }
+
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $procurement = $result->fetch_assoc();
+    $stmt->close();
 
     if ($procurement) {
         $procurement['id']             = (int)$procurement['id'];
         $procurement['abc']            = (float)$procurement['abc'];
-        $procurement['awarded_bid_id'] = $procurement['awarded_bid_id'] !== null ? (int)$procurement['awarded_bid_id'] : null;
         $procurement['awarded_amount'] = $procurement['awarded_amount'] !== null ? (float)$procurement['awarded_amount'] : null;
         $procurement['savings']        = $procurement['savings'] !== null ? (float)$procurement['savings'] : null;
     }
@@ -53,75 +57,41 @@ function fetchProcurementById($pdo, $id) {
 }
 
 /**
- * Loads all line-item specifications belonging to a procurement.
- * Used by: React component ProcurementDetails.jsx and ProcurementForm.jsx.
- * Connects to: Endpoint /api/procurements/get_procurement.php?id=X
- * Database table affected: Reads from 'procurement_items'.
- *
- * @param PDO $pdo           Active database connection.
- * @param int $procurementId Procurement primary key ID.
- * @return array Array of procurement line items.
- */
-function fetchProcurementItems($pdo, $procurementId) {
-    // Selects line items associated with this procurement
-    $stmt = $pdo->prepare('
-        SELECT 
-            id,
-            procurement_id,
-            item_name,
-            specifications,
-            quantity,
-            unit,
-            estimated_unit_cost
-        FROM procurement_items
-        WHERE procurement_id = ?
-        ORDER BY id ASC
-    ');
-    $stmt->execute([$procurementId]);
-    $items = $stmt->fetchAll();
-
-    foreach ($items as &$item) {
-        $item['id']                  = (int)$item['id'];
-        $item['procurement_id']      = (int)$item['procurement_id'];
-        $item['quantity']            = (float)$item['quantity'];
-        $item['estimated_unit_cost'] = $item['estimated_unit_cost'] !== null ? (float)$item['estimated_unit_cost'] : null;
-    }
-    unset($item);
-
-    return $items;
-}
-
-/**
  * Loads all supplier bids submitted for a procurement.
  * Used by: React component CHRBidTable.jsx inside ProcurementDetails.jsx.
  * Connects to: Endpoint /api/procurements/get_procurement.php?id=X
  * Database table affected: Reads from 'bids'.
  *
- * @param PDO $pdo           Active database connection.
- * @param int $procurementId Procurement primary key ID.
+ * @param mysqli $conn          Active MySQLi database connection.
+ * @param int    $procurementId Procurement primary key ID.
  * @return array Array of bids submitted by suppliers.
  */
-function fetchProcurementBids($pdo, $procurementId) {
-    // Selects all quotations submitted for this procurement, ranked by bid_amount ascending
-    $stmt = $pdo->prepare('
+function fetchProcurementBids($conn, $procurementId) {
+    $stmt = $conn->prepare('
         SELECT 
             id,
             procurement_id,
             bidder_name,
-            representative_name,
-            contact_number,
-            email,
+            company_name,
+            company_name AS representative_name,
             bid_amount,
             remarks,
             status,
-            created_at,
-            updated_at
+            submitted_at,
+            submitted_at AS created_at
         FROM bids
         WHERE procurement_id = ?
-        ORDER BY bid_amount ASC, created_at ASC
+        ORDER BY bid_amount ASC, submitted_at ASC
     ');
-    $stmt->execute([$procurementId]);
-    $bids = $stmt->fetchAll();
+    if (!$stmt) {
+        return [];
+    }
+
+    $stmt->bind_param('i', $procurementId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $bids = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 
     foreach ($bids as &$b) {
         $b['id']             = (int)$b['id'];
@@ -135,32 +105,39 @@ function fetchProcurementBids($pdo, $procurementId) {
 
 /**
  * Loads the chronological transaction and status history for a procurement.
- * Used by: React component TransactionHistory.jsx inside ProcurementDetails.jsx.
+ * Used by: React component inside ProcurementDetails.jsx.
  * Connects to: Endpoint /api/procurements/get_procurement.php?id=X
  * Database table affected: Reads from 'transaction_history'.
  *
- * @param PDO $pdo           Active database connection.
- * @param int $procurementId Procurement primary key ID.
+ * @param mysqli $conn          Active MySQLi database connection.
+ * @param int    $procurementId Procurement primary key ID.
  * @return array Array of audit history entries.
  */
-function fetchProcurementHistory($pdo, $procurementId) {
-    // Selects all logged actions and status changes for this procurement
-    $stmt = $pdo->prepare('
+function fetchProcurementHistory($conn, $procurementId) {
+    $stmt = $conn->prepare('
         SELECT 
             id,
             procurement_id,
             action,
-            previous_status,
-            new_status,
+            old_value,
+            new_value,
+            old_value AS previous_status,
+            new_value AS new_status,
             remarks,
-            performed_by,
             created_at
         FROM transaction_history
         WHERE procurement_id = ?
         ORDER BY created_at DESC, id DESC
     ');
-    $stmt->execute([$procurementId]);
-    $history = $stmt->fetchAll();
+    if (!$stmt) {
+        return [];
+    }
+
+    $stmt->bind_param('i', $procurementId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $history = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 
     foreach ($history as &$h) {
         $h['id']             = (int)$h['id'];
@@ -172,7 +149,7 @@ function fetchProcurementHistory($pdo, $procurementId) {
 }
 
 // 1. Establish database connection
-$pdo = connectDatabase();
+$conn = getDbConnection();
 
 // 2. Validate requested procurement ID
 $id = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT);
@@ -181,14 +158,14 @@ if (!$id) {
 }
 
 // 3. Load all connected relational records
-$procurement = fetchProcurementById($pdo, $id);
+$procurement = fetchProcurementById($conn, $id);
 if (!$procurement) {
     sendError('Procurement record not found.', null, 404);
 }
 
-$procurement['items']   = fetchProcurementItems($pdo, $id);
-$procurement['bids']    = fetchProcurementBids($pdo, $id);
-$procurement['history'] = fetchProcurementHistory($pdo, $id);
+$procurement['items']   = []; // Items table omitted in 3-table minimum schema
+$procurement['bids']    = fetchProcurementBids($conn, $id);
+$procurement['history'] = fetchProcurementHistory($conn, $id);
 
 sendSuccess('Procurement details retrieved successfully.', [
     'procurement' => $procurement,

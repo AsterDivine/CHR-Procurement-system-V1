@@ -6,8 +6,9 @@
  * =============================================================================
  * 
  * Retrieves the centralized list of all procurement records from MySQL.
- * Supports optional filtering by status (e.g. 'Draft', 'Published / Open', 'Awarded').
- * Also computes the number of submitted bids and attached line items per procurement.
+ * Uses pure PHP MySQLi prepared statements.
+ * Matches the schema: table `procurements` (reference_no, procurement_type, budget_source).
+ * Supports optional filtering by status (e.g. 'Open', 'For Evaluation', 'Awarded').
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -18,60 +19,64 @@ require_once __DIR__ . '/../helpers/response.php';
  * Fetches all procurement records matching the optional status filter from MySQL.
  * Used by: React component ProcurementTable.jsx, CHRDashboard.jsx, and BidderOpportunities.jsx.
  * Connects to: Endpoint /api/procurements/get_procurements.php
- * Database tables affected: Reads from 'procurements', 'bids', and 'procurement_items'.
+ * Database tables affected: Reads from 'procurements' and 'bids'.
  *
- * @param PDO    $pdo    Active database connection.
+ * @param mysqli $conn   Active MySQLi database connection.
  * @param string $status Optional status filter string.
  * @return array List of procurement records with formatted financial values.
  */
-function fetchProcurementList($pdo, $status = '') {
+function fetchProcurementList($conn, $status = '') {
     $sql = '
         SELECT 
             p.id,
-            p.reference_number,
+            p.reference_no,
+            p.reference_no AS reference_number,
             p.title,
             p.description,
-            p.procurement_mode,
+            p.procurement_type,
+            p.procurement_type AS procurement_mode,
             p.abc,
+            p.budget_source,
             p.deadline,
             p.status,
-            p.current_stage,
-            p.awarded_bid_id,
             p.awarded_amount,
             p.savings,
             p.created_at,
             p.updated_at,
             COUNT(DISTINCT b.id) AS total_bids,
-            COUNT(DISTINCT i.id) AS total_items,
-            wb.bidder_name AS awarded_bidder_name
+            (SELECT b2.company_name FROM bids b2 WHERE b2.procurement_id = p.id AND b2.status = "Selected" LIMIT 1) AS awarded_bidder_name
         FROM procurements p
         LEFT JOIN bids b ON p.id = b.procurement_id
-        LEFT JOIN procurement_items i ON p.id = i.procurement_id
-        LEFT JOIN bids wb ON p.awarded_bid_id = wb.id
     ';
 
-    $params = [];
     if (!empty($status)) {
         $sql .= ' WHERE p.status = ? ';
-        $params[] = $status;
     }
 
     $sql .= ' GROUP BY p.id ORDER BY p.created_at DESC ';
 
-    // Executes the prepared SQL query on the procurements table
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $records = $stmt->fetchAll();
+    // Prepare and execute query with mysqli prepared statements
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        sendError('SQL prepare failed: ' . $conn->error, null, 500);
+    }
+
+    if (!empty($status)) {
+        $stmt->bind_param('s', $status);
+    }
+
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $records = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 
     // Format numeric data types cleanly for JSON output
     foreach ($records as &$row) {
         $row['id']             = (int)$row['id'];
         $row['abc']            = (float)$row['abc'];
-        $row['awarded_bid_id'] = $row['awarded_bid_id'] !== null ? (int)$row['awarded_bid_id'] : null;
         $row['awarded_amount'] = $row['awarded_amount'] !== null ? (float)$row['awarded_amount'] : null;
         $row['savings']        = $row['savings'] !== null ? (float)$row['savings'] : null;
         $row['total_bids']     = (int)$row['total_bids'];
-        $row['total_items']    = (int)$row['total_items'];
     }
     unset($row);
 
@@ -79,13 +84,13 @@ function fetchProcurementList($pdo, $status = '') {
 }
 
 // 1. Establish database connection
-$pdo = connectDatabase();
+$conn = getDbConnection();
 
 // 2. Read optional query parameters
 $statusFilter = trim($_GET['status'] ?? '');
 
 // 3. Fetch data and send JSON response
-$procurements = fetchProcurementList($pdo, $statusFilter);
+$procurements = fetchProcurementList($conn, $statusFilter);
 
 sendSuccess('Procurement records retrieved successfully.', [
     'count'        => count($procurements),

@@ -30,14 +30,18 @@ function formatCurrency(val) {
  */
 function getStatusBadgeClass(status) {
   switch (status) {
+    case 'Open':
     case 'Published / Open':
       return 'badge badge-published';
     case 'Awarded':
       return 'badge badge-selected';
+    case 'For Evaluation':
     case 'Under Evaluation':
       return 'badge badge-review';
+    case 'In Progress':
+      return 'badge badge-auth';
     case 'Completed':
-      return 'badge badge-completed';
+      return 'badge badge-paid';
     case 'Draft':
     default:
       return 'badge badge-draft';
@@ -249,12 +253,12 @@ export default function CHRDashboard() {
                     {recentProcurements.map((proc) => (
                       <tr key={proc.id}>
                         <td>
-                          <strong>{proc.reference_number}</strong>
+                          <strong>{proc.reference_no || proc.reference_number}</strong>
                         </td>
                         <td>
                           <div>{proc.title}</div>
                           <small style={{ color: 'var(--color-text-subtle)' }}>
-                            Mode: {proc.procurement_mode}
+                            Mode: {proc.procurement_type || proc.procurement_mode || 'NP-53.9 Small Value'}
                           </small>
                         </td>
                         <td>{formatCurrency(proc.abc)}</td>

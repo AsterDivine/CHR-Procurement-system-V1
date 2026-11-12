@@ -36,14 +36,16 @@ export default function ProcurementForm() {
 
   // Master Form State
   const [formData, setFormData] = useState({
+    reference_no: '',
     reference_number: '',
     title: '',
     description: '',
+    procurement_type: 'NP-53.9 Small Value Procurement',
     procurement_mode: 'NP-53.9 Small Value Procurement',
+    budget_source: 'GAA 2024 - General Administration and Support (GAS)',
     abc: '',
     deadline: '',
-    status: 'Draft',
-    current_stage: 'Purchase Request',
+    status: 'Open',
   });
 
   // Dynamic Line Items State
@@ -55,23 +57,25 @@ export default function ProcurementForm() {
   const [errorMessage, setErrorMessage] = useState('');
 
   /**
-   * Loads existing procurement record and line items when editing an existing project.
+   * Loads existing procurement record when editing an existing project.
    * Connects to: /api/procurements/get_procurement.php?id=X
-   * Database table affected: Reads from procurements and procurement_items.
+   * Database table affected: Reads from procurements.
    */
   useEffect(() => {
     if (isEditMode) {
       loadProcurementDetails(id)
         .then((proc) => {
           setFormData({
-            reference_number: proc.reference_number,
-            title: proc.title,
-            description: proc.description,
-            procurement_mode: proc.procurement_mode,
-            abc: proc.abc,
-            deadline: proc.deadline ? proc.deadline.substring(0, 16) : '',
-            status: proc.status,
-            current_stage: proc.current_stage,
+            reference_no: proc.reference_no || proc.reference_number || '',
+            reference_number: proc.reference_no || proc.reference_number || '',
+            title: proc.title || '',
+            description: proc.description || '',
+            procurement_type: proc.procurement_type || proc.procurement_mode || 'NP-53.9 Small Value Procurement',
+            procurement_mode: proc.procurement_type || proc.procurement_mode || 'NP-53.9 Small Value Procurement',
+            budget_source: proc.budget_source || 'GAA 2024',
+            abc: proc.abc || '',
+            deadline: proc.deadline ? proc.deadline.substring(0, 10) : '',
+            status: proc.status || 'Open',
           });
 
           if (Array.isArray(proc.items) && proc.items.length > 0) {
@@ -155,15 +159,22 @@ export default function ProcurementForm() {
     setSubmitting(true);
 
     try {
-      if (!formData.reference_number.trim()) throw new Error('Reference Number is required.');
+      const ref = (formData.reference_no || formData.reference_number || '').trim();
+      if (!ref) throw new Error('Reference Number is required.');
       if (!formData.title.trim()) throw new Error('Project Title is required.');
       if (!formData.abc || Number(formData.abc) <= 0) throw new Error('ABC must be a valid positive number.');
       if (!formData.deadline) throw new Error('Submission Deadline date is required.');
 
       const payload = {
         ...formData,
+        reference_no: ref,
+        reference_number: ref,
+        procurement_type: formData.procurement_type || formData.procurement_mode || 'NP-53.9 Small Value Procurement',
+        procurement_mode: formData.procurement_type || formData.procurement_mode || 'NP-53.9 Small Value Procurement',
+        budget_source: formData.budget_source || 'GAA 2024 - General Administration and Support (GAS)',
         abc: Number(formData.abc),
-        items: items.filter((item) => item.item_name.trim() !== ''),
+        status: formData.status || 'Open',
+        items: items.filter((item) => item.item_name && item.item_name.trim() !== ''),
       };
 
       if (isEditMode) {
@@ -358,10 +369,10 @@ export default function ProcurementForm() {
           </div>
 
           <div className="form-row">
-            {/* Initial Status */}
+            {/* Status */}
             <div className="form-group">
               <label htmlFor="status" className="form-label">
-                Initial Status
+                Procurement Status
               </label>
               <select
                 id="status"
@@ -370,29 +381,28 @@ export default function ProcurementForm() {
                 value={formData.status}
                 onChange={handleInputChange}
               >
-                <option value="Draft">Draft (Save for review, not yet published)</option>
-                <option value="Published / Open">Published / Open (Immediately active for bidding)</option>
+                <option value="Open">Open (Active for supplier bidding)</option>
+                <option value="For Evaluation">For Evaluation (Closed for BAC review)</option>
+                <option value="Awarded">Awarded (Winning quotation selected)</option>
+                <option value="In Progress">In Progress (PO / Notice to Proceed issued)</option>
+                <option value="Completed">Completed (Delivered & inspected)</option>
               </select>
             </div>
 
-            {/* Current Stage */}
+            {/* Budget Source */}
             <div className="form-group">
-              <label htmlFor="current_stage" className="form-label">
-                Statutory Milestone Stage
+              <label htmlFor="budget_source" className="form-label">
+                Budget / Funding Source
               </label>
-              <select
-                id="current_stage"
-                name="current_stage"
+              <input
+                id="budget_source"
+                name="budget_source"
+                type="text"
                 className="form-input"
-                value={formData.current_stage}
+                placeholder="e.g. GAA 2024 - General Administration and Support (GAS)"
+                value={formData.budget_source || ''}
                 onChange={handleInputChange}
-              >
-                <option value="Purchase Request">1. Purchase Request (Requisition)</option>
-                <option value="Request for Quotation">2. Request for Quotation (Posting)</option>
-                <option value="Abstract of Canvass">3. Abstract of Canvass (Opening)</option>
-                <option value="BAC Resolution">4. BAC Resolution (Evaluation)</option>
-                <option value="Notice of Award">5. Notice of Award</option>
-              </select>
+              />
             </div>
           </div>
         </fieldset>

@@ -4,64 +4,76 @@
  * CENTRALIZED PROCUREMENT TRACKING AND FINANCIAL MONITORING SYSTEM (CHR-CAR)
  * File: api/config/database.php
  * =============================================================================
- * 
- * Database connection configuration for the 50% working-system prototype.
- * Uses PHP Data Objects (PDO) with prepared statements for safe SQL execution.
- * Suitable for local development with PHP's built-in server (php -S localhost:8000)
- * or standard XAMPP/MariaDB setups.
+ *
+ * Pure PHP Database Connection configuration for the 50% working-system prototype.
+ * Uses MySQLi (Object-Oriented) with prepared statements.
+ * No Laravel, no ORM, no external Composer dependencies.
+ *
+ * Designed for college capstone defense:
+ * - Pure PHP only.
+ * - Easy for a student to edit credentials for local XAMPP/WAMP or built-in PHP server.
+ * - Simple JSON error responses that do not leak internal system paths.
  */
 
-// Database credentials
-define('DB_HOST', '127.0.0.1');
-define('DB_NAME', 'chr_procurement');
-define('DB_USER', 'root');
-define('DB_PASS', ''); // Default XAMPP/local MySQL root password is empty
-define('DB_CHARSET', 'utf8mb4');
+// Database connection parameters — easy for a student to edit:
+$host     = 'localhost';
+$username = 'root';
+$password = '';
+$database = 'chr_procurement';
 
 /**
- * Opens the connection to the CHR procurement MySQL database.
- * Used by: get_procurements.php, get_procurement.php, create_procurement.php,
- * update_procurement.php, update_status.php, create_bid.php, get_bids.php,
- * select_bid.php, get_financial_summary.php, get_history.php, and get_dashboard_summary.php.
- * Connects to: MySQL Database 'chr_procurement'
- * Database tables affected: procurements, procurement_items, bids, transaction_history.
+ * Creates the MySQL database connection used by all PHP API files.
  *
- * @return PDO Active PDO database connection handle.
+ * Used by:
+ * - get_procurements.php
+ * - create_procurement.php
+ * - update_procurement.php
+ * - get_bids.php
+ * - create_bid.php
+ * - update_status.php
+ * - get_procurement.php
+ * - select_bid.php
+ * - get_financial_summary.php
+ * - get_dashboard_summary.php
+ * - get_history.php
+ *
+ * Connects PHP to the centralized chr_procurement MySQL database.
+ *
+ * @return mysqli Active MySQLi connection object.
  */
-function connectDatabase() {
-    static $pdo = null;
+function getDbConnection() {
+    global $host, $username, $password, $database;
 
-    if ($pdo === null) {
-        $dsn = sprintf(
-            'mysql:host=%s;dbname=%s;charset=%s',
-            DB_HOST,
-            DB_NAME,
-            DB_CHARSET
-        );
+    static $conn = null;
 
-        $options = [
-            // Throw PDOExceptions on SQL errors for clean error handling
-            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-            // Return records as associative arrays indexed by column name
-            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-            // Use real prepared statements rather than client emulation
-            PDO::ATTR_EMULATE_PREPARES   => false,
-        ];
+    if ($conn === null) {
+        // Suppress default PHP warning with @ to control the JSON error response cleanly
+        $conn = @new mysqli($host, $username, $password, $database);
 
-        try {
-            // Establish the PDO connection to MySQL
-            $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
-        } catch (PDOException $e) {
+        // Check if connection failed
+        if ($conn->connect_error) {
             http_response_code(500);
             header('Content-Type: application/json; charset=utf-8');
             echo json_encode([
                 'success' => false,
-                'message' => 'Database connection failed: ' . $e->getMessage(),
-                'data'    => null,
-            ]);
+                'message' => 'Database connection failed. Please ensure MySQL is running.',
+                'data'    => null
+            ], JSON_UNESCAPED_UNICODE);
             exit;
         }
+
+        // Set utf8mb4 charset to match database collation
+        $conn->set_charset('utf8mb4');
     }
 
-    return $pdo;
+    return $conn;
+}
+
+/**
+ * Backward compatibility alias for any existing code calling connectDatabase().
+ *
+ * @return mysqli Active MySQLi connection object.
+ */
+function connectDatabase() {
+    return getDbConnection();
 }

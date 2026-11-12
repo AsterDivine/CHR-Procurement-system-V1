@@ -59,7 +59,7 @@ export default function BidderQuotationForm() {
    * Database table affected: Reads from procurements.
    */
   useEffect(() => {
-    loadProcurements('Published / Open')
+    loadProcurements('Open')
       .then((records) => {
         setProcurementList(records);
         if (preselectedProcId) {
@@ -133,10 +133,14 @@ export default function BidderQuotationForm() {
         throw new Error('Quotation Amount must be a positive number.');
       }
 
+      const company = formData.bidder_name.trim();
+      const rep = formData.representative_name.trim();
+
       const payload = {
         procurement_id: Number(selectedProcurementId),
-        bidder_name: formData.bidder_name.trim(),
-        representative_name: formData.representative_name.trim(),
+        bidder_name: rep || company,
+        company_name: company || rep,
+        representative_name: rep,
         contact_number: formData.contact_number.trim(),
         email: formData.email.trim(),
         bid_amount: Number(formData.bid_amount),
@@ -146,7 +150,7 @@ export default function BidderQuotationForm() {
       await submitBidQuotation(payload);
 
       setSuccessMessage(
-        `Quotation successfully submitted for "${selectedProcurement?.reference_number}" at ${formatCurrency(payload.bid_amount)}!`
+        `Quotation successfully submitted for "${selectedProcurement?.reference_no || selectedProcurement?.reference_number}" at ${formatCurrency(payload.bid_amount)}!`
       );
 
       // Reset quotation form fields

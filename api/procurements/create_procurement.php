@@ -5,9 +5,10 @@
  * File: api/procurements/create_procurement.php
  * =============================================================================
  * 
- * Inserts a new procurement project along with its technical line items into MySQL.
- * Also writes an initial creation log to the transaction_history audit table.
- * Uses a PDO database transaction (beginTransaction/commit) to ensure atomic storage.
+ * Inserts a new procurement project into MySQL table `procurements`.
+ * Uses pure PHP MySQLi prepared statements.
+ * Also writes an initial creation log to the `transaction_history` audit table.
+ * Uses a MySQLi transaction (begin_transaction/commit) to ensure atomic storage.
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -20,158 +21,130 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 /**
- * Validates and inserts a procurement master record and line items into MySQL.
+ * Validates and inserts a procurement master record into MySQL.
  * Used by: React component ProcurementForm.jsx (Create Mode).
  * Connects to: Endpoint /api/procurements/create_procurement.php
- * Database tables affected: Writes to 'procurements', 'procurement_items', and 'transaction_history'.
+ * Database tables affected: Writes to 'procurements' and 'transaction_history'.
  *
- * @param PDO   $pdo  Active database connection.
- * @param array $data Input form data payload.
+ * @param mysqli $conn Active MySQLi database connection.
+ * @param array  $data Input form data payload.
  * @return int Primary key ID of the newly created procurement record.
  */
-function createProcurementRecord($pdo, $data) {
+function createProcurementRecord($conn, $data) {
     // 1. Sanitize and validate input fields
-    $refNumber       = trim($data['reference_number'] ?? '');
+    $refNo           = trim($data['reference_no'] ?? $data['reference_number'] ?? '');
     $title           = trim($data['title'] ?? '');
     $description     = trim($data['description'] ?? '');
-    $procurementMode = trim($data['procurement_mode'] ?? 'NP-53.9 Small Value Procurement');
+    $procurementType = trim($data['procurement_type'] ?? $data['procurement_mode'] ?? 'NP-53.9 Small Value Procurement');
+    $budgetSource    = trim($data['budget_source'] ?? 'General Appropriations Act (GAA)');
     $abc             = $data['abc'] ?? null;
     $deadline        = trim($data['deadline'] ?? '');
-    $status          = trim($data['status'] ?? 'Draft');
-    $stage           = trim($data['current_stage'] ?? 'Purchase Request');
-    $items           = $data['items'] ?? [];
+    $status          = trim($data['status'] ?? 'Open');
 
-    if (empty($refNumber)) {
+    if (empty($refNo)) {
         sendError('Reference Number is required (e.g. CHR-CAR-2024-001).', null, 422);
     }
     if (empty($title)) {
         sendError('Project Title is required.', null, 422);
     }
-    if (empty($description)) {
-        sendError('Project Description is required.', null, 422);
-    }
     if (!is_numeric($abc) || (float)$abc <= 0) {
         sendError('Approved Budget for the Contract (ABC) must be a positive number.', null, 422);
     }
     if (empty($deadline) || strtotime($deadline) === false) {
-        sendError('A valid submission deadline datetime is required.', null, 422);
+        sendError('A valid submission deadline date is required.', null, 422);
     }
 
-    $formattedDeadline = date('Y-m-d H:i:s', strtotime($deadline));
+    $formattedDeadline = date('Y-m-d', strtotime($deadline));
 
-    // Check for duplicate reference number
-    // Queries the procurements table for existing reference number
-    $checkStmt = $pdo->prepare('SELECT id FROM procurements WHERE reference_number = ? LIMIT 1');
-    $checkStmt->execute([$refNumber]);
-    if ($checkStmt->fetch()) {
-        sendError(sprintf('A procurement with reference number "%s" already exists.', $refNumber), null, 409);
+    // Check unique reference_no
+    $checkStmt = $conn->prepare('SELECT id FROM procurements WHERE reference_no = ? LIMIT 1');
+    if ($checkStmt) {
+        $checkStmt->bind_param('s', $refNo);
+        $checkStmt->execute();
+        $checkStmt->store_result();
+        if ($checkStmt->num_rows > 0) {
+            $checkStmt->close();
+            sendError(sprintf('Reference Number "%s" is already registered.', $refNo), null, 409);
+        }
+        $checkStmt->close();
     }
 
-    // 2. Begin atomic database transaction
-    $pdo->beginTransaction();
+    $conn->begin_transaction();
 
     try {
-        // Inserts the new procurement record into the centralized procurements table
-        $stmt = $pdo->prepare('
+        // 2. Insert into procurements table
+        $stmt = $conn->prepare('
             INSERT INTO procurements (
-                reference_number,
+                reference_no,
                 title,
                 description,
-                procurement_mode,
+                procurement_type,
                 abc,
+                budget_source,
                 deadline,
                 status,
-                current_stage,
-                created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
         ');
-
-        $stmt->execute([
-            $refNumber,
-            $title,
-            $description,
-            $procurementMode,
-            (float)$abc,
-            $formattedDeadline,
-            $status,
-            $stage,
-        ]);
-
-        $procurementId = (int)$pdo->lastInsertId();
-
-        // Inserts line items if provided
-        if (is_array($items) && count($items) > 0) {
-            // Inserts item rows into the procurement_items table
-            $itemStmt = $pdo->prepare('
-                INSERT INTO procurement_items (
-                    procurement_id,
-                    item_name,
-                    specifications,
-                    quantity,
-                    unit,
-                    estimated_unit_cost
-                ) VALUES (?, ?, ?, ?, ?, ?)
-            ');
-
-            foreach ($items as $item) {
-                $itemName = trim($item['item_name'] ?? '');
-                if (!empty($itemName)) {
-                    $itemStmt->execute([
-                        $procurementId,
-                        $itemName,
-                        trim($item['specifications'] ?? ''),
-                        (float)($item['quantity'] ?? 1),
-                        trim($item['unit'] ?? 'lot'),
-                        isset($item['estimated_unit_cost']) && is_numeric($item['estimated_unit_cost'])
-                            ? (float)$item['estimated_unit_cost']
-                            : null,
-                    ]);
-                }
-            }
+        if (!$stmt) {
+            throw new Exception('SQL prepare failed for procurement: ' . $conn->error);
         }
 
-        // Inserts initial audit trail entry into the transaction_history table
-        $histStmt = $pdo->prepare('
+        $abcFloat = (float)$abc;
+        $stmt->bind_param(
+            'ssssdsss',
+            $refNo,
+            $title,
+            $description,
+            $procurementType,
+            $abcFloat,
+            $budgetSource,
+            $formattedDeadline,
+            $status
+        );
+        $stmt->execute();
+        $newProcurementId = (int)$conn->insert_id;
+        $stmt->close();
+
+        // 3. Log initial creation in transaction_history
+        $action = 'Procurement Created';
+        $remarks = sprintf('Procurement record "%s" created in CHR-CAR database.', $refNo);
+        $historyStmt = $conn->prepare('
             INSERT INTO transaction_history (
                 procurement_id,
                 action,
-                previous_status,
-                new_status,
+                old_value,
+                new_value,
                 remarks,
-                performed_by,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+            ) VALUES (?, ?, NULL, ?, ?, NOW())
         ');
+        if (!$historyStmt) {
+            throw new Exception('SQL prepare failed for history: ' . $conn->error);
+        }
 
-        $histStmt->execute([
-            $procurementId,
-            'Procurement Created',
-            null,
-            $status,
-            sprintf('Initial creation of procurement "%s" with ABC PHP %s.', $refNumber, number_format((float)$abc, 2)),
-            'CHR Procurement Officer',
-        ]);
+        $historyStmt->bind_param('isss', $newProcurementId, $action, $status, $remarks);
+        $historyStmt->execute();
+        $historyStmt->close();
 
-        // Commit all SQL operations
-        $pdo->commit();
+        $conn->commit();
 
-        return $procurementId;
+        return $newProcurementId;
     } catch (Exception $e) {
-        $pdo->rollBack();
-        sendError('Failed to create procurement: ' . $e->getMessage(), null, 500);
+        $conn->rollback();
+        sendError('Database error during procurement creation: ' . $e->getMessage(), null, 500);
     }
 }
 
 // 1. Establish database connection
-$pdo = connectDatabase();
+$conn = getDbConnection();
 
-// 2. Parse input JSON payload
+// 2. Read and parse JSON body
 $input = getJsonInput();
 
-// 3. Create record in MySQL
-$newId = createProcurementRecord($pdo, $input);
+// 3. Save into MySQL
+$newId = createProcurementRecord($conn, $input);
 
-sendSuccess('Procurement project created successfully.', [
+sendSuccess('Procurement opportunity created successfully.', [
     'procurement_id' => $newId,
 ], 201);

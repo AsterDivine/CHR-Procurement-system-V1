@@ -30,14 +30,18 @@ function formatCurrency(val) {
  */
 function getBadgeClass(status) {
   switch (status) {
+    case 'Open':
     case 'Published / Open':
       return 'badge badge-published';
     case 'Awarded':
       return 'badge badge-selected';
+    case 'For Evaluation':
     case 'Under Evaluation':
       return 'badge badge-review';
+    case 'In Progress':
+      return 'badge badge-auth';
     case 'Completed':
-      return 'badge badge-completed';
+      return 'badge badge-paid';
     case 'Draft':
     default:
       return 'badge badge-draft';
@@ -234,10 +238,10 @@ export default function ProcurementTable() {
                   onChange={(e) => setStatusFilter(e.target.value)}
                 >
                   <option value="">All Statuses ({procurements.length})</option>
-                  <option value="Draft">Draft</option>
-                  <option value="Published / Open">Published / Open</option>
-                  <option value="Under Evaluation">Under Evaluation</option>
+                  <option value="Open">Open</option>
+                  <option value="For Evaluation">For Evaluation</option>
                   <option value="Awarded">Awarded</option>
+                  <option value="In Progress">In Progress</option>
                   <option value="Completed">Completed</option>
                 </select>
               </div>
@@ -304,12 +308,12 @@ export default function ProcurementTable() {
                     {filteredList.map((p) => (
                       <tr key={p.id}>
                         <td>
-                          <strong>{p.reference_number}</strong>
+                          <strong>{p.reference_no || p.reference_number}</strong>
                         </td>
                         <td>
                           <div style={{ fontWeight: 600 }}>{p.title}</div>
                           <small style={{ color: 'var(--color-text-subtle)' }}>
-                            {p.procurement_mode} &bull; Deadline: {p.deadline.substring(0, 10)}
+                            {p.procurement_type || p.procurement_mode || 'NP-53.9 Small Value'} &bull; Deadline: {p.deadline ? p.deadline.substring(0, 10) : '—'}
                           </small>
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>

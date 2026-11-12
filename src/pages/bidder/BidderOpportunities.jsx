@@ -68,8 +68,8 @@ export default function BidderOpportunities() {
     setLoading(true);
     setError(null);
     try {
-      // In this 50% prototype, bidders see all 'Published / Open' notices
-      const all = await loadProcurements('Published / Open');
+      // In this 50% prototype, bidders see all 'Open' notices
+      const all = await loadProcurements('Open');
       setOpportunities(all);
     } catch (err) {
       setError(err.message);
@@ -95,9 +95,9 @@ export default function BidderOpportunities() {
     const q = searchKeyword.toLowerCase();
     return opportunities.filter(
       (opp) =>
-        opp.reference_number.toLowerCase().includes(q) ||
-        opp.title.toLowerCase().includes(q) ||
-        opp.description.toLowerCase().includes(q)
+        (opp.reference_no || opp.reference_number || '').toLowerCase().includes(q) ||
+        (opp.title || '').toLowerCase().includes(q) ||
+        (opp.description || '').toLowerCase().includes(q)
     );
   };
 
@@ -239,7 +239,7 @@ export default function BidderOpportunities() {
                     {filteredOpportunities.map((opp) => (
                       <tr key={opp.id}>
                         <td>
-                          <strong>{opp.reference_number}</strong>
+                          <strong>{opp.reference_no || opp.reference_number}</strong>
                         </td>
                         <td>
                           <div style={{ fontWeight: 600, fontSize: '14.5px', marginBottom: '4px' }}>
@@ -250,7 +250,7 @@ export default function BidderOpportunities() {
                           </p>
                         </td>
                         <td>
-                          <span style={{ fontSize: '12.5px' }}>{opp.procurement_mode}</span>
+                          <span style={{ fontSize: '12.5px' }}>{opp.procurement_type || opp.procurement_mode || 'NP-53.9 Small Value'}</span>
                         </td>
                         <td style={{ whiteSpace: 'nowrap' }}>
                           <strong style={{ fontSize: '15px', color: 'var(--color-primary-dark)' }}>

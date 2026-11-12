@@ -7,6 +7,7 @@
  * 
  * Computes executive KPI summary cards and recent activity for the CHR Dashboard.
  * Returns counts of active procurements, pending bids, total ABC, and budget savings.
+ * Uses pure PHP MySQLi prepared statements.
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -19,56 +20,67 @@ require_once __DIR__ . '/../helpers/response.php';
  * Connects to: Endpoint /api/procurements/get_dashboard_summary.php
  * Database tables affected: Reads from 'procurements', 'bids', and 'transaction_history'.
  *
- * @param PDO $pdo Active database connection.
+ * @param mysqli $conn Active MySQLi database connection.
  * @return array Dashboard KPIs, recent procurements, and recent history logs.
  */
-function fetchDashboardKPIs($pdo) {
+function fetchDashboardKPIs($conn) {
     // 1. Compute aggregate statistics from procurements table
-    $stmt = $pdo->prepare('
+    $stmt = $conn->prepare('
         SELECT 
             COUNT(*) AS total_procurements,
-            COALESCE(SUM(CASE WHEN status = "Draft" THEN 1 ELSE 0 END), 0) AS total_draft,
-            COALESCE(SUM(CASE WHEN status = "Published / Open" THEN 1 ELSE 0 END), 0) AS total_open,
-            COALESCE(SUM(CASE WHEN status = "Under Evaluation" THEN 1 ELSE 0 END), 0) AS total_evaluation,
+            COALESCE(SUM(CASE WHEN status IN ("Open", "Published / Open") THEN 1 ELSE 0 END), 0) AS total_open,
+            COALESCE(SUM(CASE WHEN status = "For Evaluation" THEN 1 ELSE 0 END), 0) AS total_evaluation,
             COALESCE(SUM(CASE WHEN status = "Awarded" THEN 1 ELSE 0 END), 0) AS total_awarded,
+            COALESCE(SUM(CASE WHEN status = "In Progress" THEN 1 ELSE 0 END), 0) AS total_in_progress,
             COALESCE(SUM(CASE WHEN status = "Completed" THEN 1 ELSE 0 END), 0) AS total_completed,
             COALESCE(SUM(abc), 0) AS total_abc,
             COALESCE(SUM(awarded_amount), 0) AS total_awarded_amount,
             COALESCE(SUM(savings), 0) AS total_savings
         FROM procurements
     ');
+    if (!$stmt) {
+        sendError('SQL prepare failed: ' . $conn->error, null, 500);
+    }
     $stmt->execute();
-    $kpi = $stmt->fetch();
+    $result = $stmt->get_result();
+    $kpi = $result->fetch_assoc();
+    $stmt->close();
 
     // 2. Count total submitted bids
-    $bidStmt = $pdo->prepare('SELECT COUNT(*) AS total_bids FROM bids');
+    $bidStmt = $conn->prepare('SELECT COUNT(*) AS total_bids FROM bids');
     $bidStmt->execute();
-    $bidCount = (int)$bidStmt->fetchColumn();
+    $bidResult = $bidStmt->get_result();
+    $bidRow = $bidResult->fetch_assoc();
+    $bidCount = (int)($bidRow['total_bids'] ?? 0);
+    $bidStmt->close();
 
     // 3. Fetch 5 most recent procurements
-    $recentStmt = $pdo->prepare('
+    $recentStmt = $conn->prepare('
         SELECT 
             p.id,
-            p.reference_number,
+            p.reference_no,
+            p.reference_no AS reference_number,
             p.title,
-            p.procurement_mode,
+            p.procurement_type,
+            p.procurement_type AS procurement_mode,
             p.abc,
+            p.budget_source,
             p.deadline,
             p.status,
-            p.current_stage,
             p.awarded_amount,
             p.savings,
-            wb.bidder_name AS awarded_bidder_name,
-            COUNT(DISTINCT b.id) AS total_bids
+            COUNT(DISTINCT b.id) AS total_bids,
+            (SELECT b2.company_name FROM bids b2 WHERE b2.procurement_id = p.id AND b2.status = "Selected" LIMIT 1) AS awarded_bidder_name
         FROM procurements p
         LEFT JOIN bids b ON p.id = b.procurement_id
-        LEFT JOIN bids wb ON p.awarded_bid_id = wb.id
         GROUP BY p.id
         ORDER BY p.created_at DESC
         LIMIT 5
     ');
     $recentStmt->execute();
-    $recentProcurements = $recentStmt->fetchAll();
+    $recentResult = $recentStmt->get_result();
+    $recentProcurements = $recentResult->fetch_all(MYSQLI_ASSOC);
+    $recentStmt->close();
 
     foreach ($recentProcurements as &$r) {
         $r['id']             = (int)$r['id'];
@@ -79,44 +91,40 @@ function fetchDashboardKPIs($pdo) {
     }
     unset($r);
 
-    // 4. Fetch 5 most recent transaction history logs
-    $histStmt = $pdo->prepare('
+    // 4. Fetch 5 most recent transaction logs
+    $histStmt = $conn->prepare('
         SELECT 
             h.id,
             h.procurement_id,
             h.action,
-            h.previous_status,
-            h.new_status,
+            h.old_value,
+            h.new_value,
             h.remarks,
-            h.performed_by,
             h.created_at,
-            p.reference_number AS procurement_reference
+            p.reference_no AS procurement_reference,
+            p.reference_no
         FROM transaction_history h
         JOIN procurements p ON h.procurement_id = p.id
         ORDER BY h.created_at DESC, h.id DESC
         LIMIT 5
     ');
     $histStmt->execute();
-    $recentHistory = $histStmt->fetchAll();
-
-    foreach ($recentHistory as &$h) {
-        $h['id']             = (int)$h['id'];
-        $h['procurement_id'] = (int)$h['procurement_id'];
-    }
-    unset($h);
+    $histResult = $histStmt->get_result();
+    $recentHistory = $histResult->fetch_all(MYSQLI_ASSOC);
+    $histStmt->close();
 
     return [
         'kpi' => [
-            'total_procurements'   => (int)$kpi['total_procurements'],
-            'total_draft'          => (int)$kpi['total_draft'],
-            'total_open'           => (int)$kpi['total_open'],
-            'total_evaluation'     => (int)$kpi['total_evaluation'],
-            'total_awarded'        => (int)$kpi['total_awarded'],
-            'total_completed'      => (int)$kpi['total_completed'],
+            'total_procurements'   => (int)($kpi['total_procurements'] ?? 0),
+            'total_open'           => (int)($kpi['total_open'] ?? 0),
+            'total_evaluation'     => (int)($kpi['total_evaluation'] ?? 0),
+            'total_awarded'        => (int)($kpi['total_awarded'] ?? 0),
+            'total_in_progress'    => (int)($kpi['total_in_progress'] ?? 0),
+            'total_completed'      => (int)($kpi['total_completed'] ?? 0),
             'total_bids'           => $bidCount,
-            'total_abc'            => (float)$kpi['total_abc'],
-            'total_awarded_amount' => (float)$kpi['total_awarded_amount'],
-            'total_savings'        => (float)$kpi['total_savings'],
+            'total_abc'            => (float)($kpi['total_abc'] ?? 0),
+            'total_awarded_amount' => (float)($kpi['total_awarded_amount'] ?? 0),
+            'total_savings'        => (float)($kpi['total_savings'] ?? 0),
         ],
         'recent_procurements' => $recentProcurements,
         'recent_history'      => $recentHistory,
@@ -124,9 +132,9 @@ function fetchDashboardKPIs($pdo) {
 }
 
 // 1. Establish database connection
-$pdo = connectDatabase();
+$conn = getDbConnection();
 
-// 2. Fetch dashboard data and send JSON response
-$dashboard = fetchDashboardKPIs($pdo);
+// 2. Fetch metrics and send JSON response
+$data = fetchDashboardKPIs($conn);
 
-sendSuccess('Dashboard summary metrics retrieved successfully.', $dashboard);
+sendSuccess('Dashboard summary metrics retrieved successfully.', $data);

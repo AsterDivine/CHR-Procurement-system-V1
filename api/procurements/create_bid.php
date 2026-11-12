@@ -6,9 +6,9 @@
  * =============================================================================
  * 
  * Allows a prospective supplier/bidder to submit an official price quotation.
- * In this 50% prototype, bidders submit directly with their company credentials
- * without requiring account registration, session login, or file uploads.
- * Records the quotation in the bids table and logs the submission into transaction_history.
+ * Uses pure PHP MySQLi prepared statements.
+ * Inserts into table `bids` (procurement_id, bidder_name, company_name, bid_amount, remarks, status, submitted_at).
+ * Logs the event into `transaction_history`.
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -26,34 +26,28 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
  * Connects to: Endpoint /api/procurements/create_bid.php
  * Database tables affected: Writes to 'bids' and 'transaction_history'. Reads from 'procurements'.
  *
- * @param PDO   $pdo  Active database connection.
- * @param array $data Input payload containing procurement_id, bidder_name, representative_name, contact, email, bid_amount, remarks.
+ * @param mysqli $conn Active MySQLi database connection.
+ * @param array  $data Input payload.
  * @return int Primary key ID of the newly inserted bid record.
  */
-function createBidQuotation($pdo, $data) {
-    $procurementId      = filter_var($data['procurement_id'] ?? null, FILTER_VALIDATE_INT);
-    $bidderName         = trim($data['bidder_name'] ?? '');
-    $representativeName = trim($data['representative_name'] ?? '');
-    $contactNumber      = trim($data['contact_number'] ?? '');
-    $email              = trim($data['email'] ?? '');
-    $bidAmount          = $data['bid_amount'] ?? null;
-    $remarks            = trim($data['remarks'] ?? '');
+function createBidQuotation($conn, $data) {
+    $procurementId = filter_var($data['procurement_id'] ?? null, FILTER_VALIDATE_INT);
+    
+    // Bidder name and company name
+    $bidderName  = trim($data['bidder_name'] ?? $data['representative_name'] ?? '');
+    $companyName = trim($data['company_name'] ?? $data['bidder_name'] ?? '');
+    $bidAmount   = $data['bid_amount'] ?? null;
+    $remarks     = trim($data['remarks'] ?? '');
 
     // Form field validation
     if (!$procurementId) {
         sendError('A valid procurement ID is required.', null, 422);
     }
     if (empty($bidderName)) {
-        sendError('Supplier / Company Name is required.', null, 422);
+        sendError('Bidder / Authorized Representative Name is required.', null, 422);
     }
-    if (empty($representativeName)) {
-        sendError('Authorized Representative Name is required.', null, 422);
-    }
-    if (empty($contactNumber)) {
-        sendError('Contact Number is required.', null, 422);
-    }
-    if (empty($email) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
-        sendError('A valid Email Address is required.', null, 422);
+    if (empty($companyName)) {
+        sendError('Company / Supplier Name is required.', null, 422);
     }
     if (!is_numeric($bidAmount) || (float)$bidAmount <= 0) {
         sendError('Bid Quotation Amount must be a valid positive number.', null, 422);
@@ -62,91 +56,95 @@ function createBidQuotation($pdo, $data) {
     $bidAmount = (float)$bidAmount;
 
     // Verify procurement exists and is open for bidding
-    // Queries the procurements table to check project status
-    $stmt = $pdo->prepare('SELECT id, reference_number, title, abc, status, deadline FROM procurements WHERE id = ? LIMIT 1');
-    $stmt->execute([$procurementId]);
-    $procurement = $stmt->fetch();
+    $stmt = $conn->prepare('SELECT id, reference_no, title, abc, status, deadline FROM procurements WHERE id = ? LIMIT 1');
+    if (!$stmt) {
+        sendError('SQL prepare error: ' . $conn->error, null, 500);
+    }
+    $stmt->bind_param('i', $procurementId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $procurement = $result->fetch_assoc();
+    $stmt->close();
 
     if (!$procurement) {
         sendError('Procurement project not found.', null, 404);
     }
 
-    // Prototype rule: can submit bids on 'Published / Open' projects
-    if ($procurement['status'] !== 'Published / Open') {
-        sendError(sprintf('Cannot submit quotation: This procurement is currently "%s" (must be "Published / Open").', $procurement['status']), null, 422);
+    // Prototype rule: can submit bids on 'Open' (or 'Published / Open') projects
+    if ($procurement['status'] !== 'Open' && $procurement['status'] !== 'Published / Open') {
+        sendError(sprintf('Cannot submit quotation: This procurement is currently "%s" (must be "Open").', $procurement['status']), null, 422);
     }
 
-    $pdo->beginTransaction();
+    $conn->begin_transaction();
 
     try {
-        // Inserts the new supplier quotation into the bids table
-        $insertStmt = $pdo->prepare('
+        $insertStmt = $conn->prepare('
             INSERT INTO bids (
                 procurement_id,
                 bidder_name,
-                representative_name,
-                contact_number,
-                email,
+                company_name,
                 bid_amount,
                 remarks,
                 status,
-                created_at,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, "Submitted", NOW(), NOW())
+                submitted_at
+            ) VALUES (?, ?, ?, ?, ?, "Submitted", NOW())
         ');
+        if (!$insertStmt) {
+            throw new Exception('SQL prepare error for bids: ' . $conn->error);
+        }
 
-        $insertStmt->execute([
+        $insertStmt->bind_param(
+            'issds',
             $procurementId,
             $bidderName,
-            $representativeName,
-            $contactNumber,
-            $email,
+            $companyName,
             $bidAmount,
-            $remarks,
-        ]);
+            $remarks
+        );
+        $insertStmt->execute();
+        $bidId = (int)$conn->insert_id;
+        $insertStmt->close();
 
-        $bidId = (int)$pdo->lastInsertId();
+        $action = 'Bid Submitted';
+        $newVal = number_format($bidAmount, 2);
+        $histRemarks = sprintf('Quotation of PHP %s submitted by "%s" (%s).', number_format($bidAmount, 2), $companyName, $bidderName);
 
-        // Inserts the quotation event into the transaction_history audit table
-        $histStmt = $pdo->prepare('
+        $histStmt = $conn->prepare('
             INSERT INTO transaction_history (
                 procurement_id,
                 action,
-                previous_status,
-                new_status,
+                old_value,
+                new_value,
                 remarks,
-                performed_by,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+            ) VALUES (?, ?, NULL, ?, ?, NOW())
         ');
+        if (!$histStmt) {
+            throw new Exception('SQL prepare error for history: ' . $conn->error);
+        }
 
-        $histStmt->execute([
-            $procurementId,
-            'Bid Submitted',
-            $procurement['status'],
-            $procurement['status'],
-            sprintf('Quotation submitted by "%s" (Amount: PHP %s). Notes: %s', $bidderName, number_format($bidAmount, 2), $remarks ?: 'None provided.'),
-            $bidderName . ' (' . $representativeName . ')',
-        ]);
+        $histStmt->bind_param('isss', $procurementId, $action, $newVal, $histRemarks);
+        $histStmt->execute();
+        $histStmt->close();
 
-        $pdo->commit();
+        $conn->commit();
 
         return $bidId;
     } catch (Exception $e) {
-        $pdo->rollBack();
-        sendError('Failed to submit bid quotation: ' . $e->getMessage(), null, 500);
+        $conn->rollback();
+        sendError('Failed to record bid submission: ' . $e->getMessage(), null, 500);
     }
 }
 
 // 1. Establish database connection
-$pdo = connectDatabase();
+$conn = getDbConnection();
 
-// 2. Parse input JSON payload
+// 2. Read and parse JSON body
 $input = getJsonInput();
 
-// 3. Record bid in MySQL
-$bidId = createBidQuotation($pdo, $input);
+// 3. Save quotation into MySQL
+$newBidId = createBidQuotation($conn, $input);
 
-sendSuccess('Quotation submitted successfully.', [
-    'bid_id' => $bidId,
+sendSuccess('Price quotation submitted successfully.', [
+    'bid_id' => $newBidId,
 ], 201);

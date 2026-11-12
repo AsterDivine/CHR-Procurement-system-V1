@@ -11,6 +11,7 @@
  * 3. Total Realized Savings (ABC - Awarded Amount)
  * 4. Overall Savings Percentage
  * 5. Project-by-project financial ledger breakdown
+ * Uses pure PHP MySQLi prepared statements.
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -23,30 +24,36 @@ require_once __DIR__ . '/../helpers/response.php';
  * Connects to: Endpoint /api/procurements/get_financial_summary.php
  * Database tables affected: Reads from 'procurements' and 'bids'.
  *
- * @param PDO $pdo Active database connection.
+ * @param mysqli $conn Active MySQLi database connection.
  * @return array Financial summary totals and project rows.
  */
-function fetchFinancialMonitoringSummary($pdo) {
-    // Queries all procurements from the database
-    $stmt = $pdo->prepare('
+function fetchFinancialMonitoringSummary($conn) {
+    $stmt = $conn->prepare('
         SELECT 
             p.id,
-            p.reference_number,
+            p.reference_no,
+            p.reference_no AS reference_number,
             p.title,
-            p.procurement_mode,
+            p.procurement_type,
+            p.procurement_type AS procurement_mode,
+            p.budget_source,
             p.abc,
             p.awarded_amount,
             p.savings,
             p.status,
-            p.current_stage,
             p.created_at,
-            b.bidder_name AS winning_supplier
+            (SELECT b.company_name FROM bids b WHERE b.procurement_id = p.id AND b.status = "Selected" LIMIT 1) AS winning_supplier
         FROM procurements p
-        LEFT JOIN bids b ON p.awarded_bid_id = b.id
         ORDER BY p.created_at DESC
     ');
+    if (!$stmt) {
+        sendError('SQL prepare failed: ' . $conn->error, null, 500);
+    }
+
     $stmt->execute();
-    $projects = $stmt->fetchAll();
+    $result = $stmt->get_result();
+    $projects = $result->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
 
     $totalAbc     = 0.0;
     $totalAwarded = 0.0;
@@ -77,26 +84,25 @@ function fetchFinancialMonitoringSummary($pdo) {
     }
     unset($proj);
 
-    // Calculate overall regional procurement savings rate
-    $overallSavingsRate = $totalAbc > 0 ? round(($totalSavings / $totalAbc) * 100, 2) : 0;
+    $overallSavingsRate = ($totalAbc > 0) ? round(($totalSavings / $totalAbc) * 100, 2) : 0;
 
     return [
         'totals' => [
-            'total_projects'        => count($projects),
-            'awarded_projects'      => $awardedCount,
-            'total_abc'             => $totalAbc,
-            'total_awarded_amount'  => $totalAwarded,
-            'total_savings'         => $totalSavings,
-            'overall_savings_rate'  => $overallSavingsRate,
+            'total_projects'       => count($projects),
+            'awarded_projects'     => $awardedCount,
+            'total_abc'            => $totalAbc,
+            'total_awarded_amount' => $totalAwarded,
+            'total_savings'        => $totalSavings,
+            'overall_savings_rate' => $overallSavingsRate,
         ],
         'projects' => $projects,
     ];
 }
 
 // 1. Establish database connection
-$pdo = connectDatabase();
+$conn = getDbConnection();
 
-// 2. Compute financial summary and return JSON
-$summary = fetchFinancialMonitoringSummary($pdo);
+// 2. Compute metrics and send JSON response
+$summary = fetchFinancialMonitoringSummary($conn);
 
-sendSuccess('Financial monitoring summary retrieved successfully.', $summary);
+sendSuccess('Financial monitoring summary calculated successfully.', $summary);

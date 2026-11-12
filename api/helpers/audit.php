@@ -6,39 +6,33 @@
  * =============================================================================
  * 
  * Helper to record administrative and security audit trail logs
- * in the MySQL `audit_logs` table for compliance and defense reporting.
+ * in the MySQL `transaction_history` table for compliance and defense reporting.
+ * Uses pure PHP MySQLi prepared statements.
  */
 
 /**
- * Inserts an audit log entry.
+ * Inserts a transaction history entry into MySQL.
  *
- * @param PDO         $pdo        Active PDO database connection
- * @param int|null    $userId     User performing the action (or null if system/unauthenticated)
- * @param string      $action     Action identifier (e.g., 'CREATE_OPPORTUNITY', 'STATUS_CHANGE')
- * @param string      $entityType Entity affected (e.g., 'opportunity', 'bid', 'transaction')
- * @param int|null    $entityId   Primary key ID of the affected entity
- * @param mixed|null  $details    Descriptive details or array (auto-encoded to JSON)
+ * @param mysqli      $conn          Active MySQLi database connection
+ * @param int         $procurementId Affected procurement project ID
+ * @param string      $action        Action identifier (e.g., 'STATUS_CHANGE', 'BID_SUBMITTED')
+ * @param string|null $oldValue      Previous value or status
+ * @param string|null $newValue      New value or status
+ * @param string|null $remarks       Descriptive narrative
  * @return void
  */
-function recordAuditLog($pdo, $userId, $action, $entityType, $entityId = null, $details = null) {
+function recordTransactionHistory($conn, $procurementId, $action, $oldValue = null, $newValue = null, $remarks = null) {
     try {
-        $detailsText = is_array($details)
-            ? json_encode($details, JSON_UNESCAPED_UNICODE)
-            : ($details ? (string)$details : null);
-
-        $stmt = $pdo->prepare('
-            INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details, created_at)
+        $stmt = $conn->prepare('
+            INSERT INTO transaction_history (procurement_id, action, old_value, new_value, remarks, created_at)
             VALUES (?, ?, ?, ?, ?, NOW())
         ');
-        $stmt->execute([
-            $userId,
-            $action,
-            $entityType,
-            $entityId,
-            $detailsText,
-        ]);
+        if ($stmt) {
+            $stmt->bind_param('issss', $procurementId, $action, $oldValue, $newValue, $remarks);
+            $stmt->execute();
+            $stmt->close();
+        }
     } catch (Exception $e) {
-        // Audit logging should not crash the main transaction, but log errors if needed
-        error_log('Audit log failure: ' . $e->getMessage());
+        error_log('Transaction history log failure: ' . $e->getMessage());
     }
 }

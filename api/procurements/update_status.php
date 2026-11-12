@@ -5,9 +5,9 @@
  * File: api/procurements/update_status.php
  * =============================================================================
  * 
- * Updates the procurement's status ('Draft', 'Published / Open', 'Under Evaluation',
- * 'Awarded', 'Completed', 'Cancelled') and/or its statutory workflow stage.
- * Immediately logs the transition with remarks into transaction_history.
+ * Updates the procurement's status ('Open', 'For Evaluation', 'Awarded', 'In Progress', 'Completed').
+ * Uses pure PHP MySQLi prepared statements.
+ * Immediately logs the transition with remarks into `transaction_history`.
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -20,95 +20,95 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 /**
- * Transitions the procurement status or stage and records the audit history.
- * Used by: React component ProcurementStatusTracker.jsx and ProcurementTable.jsx.
+ * Transitions the procurement status and records the audit history.
+ * Used by: React components.
  * Connects to: Endpoint /api/procurements/update_status.php
  * Database tables affected: Updates 'procurements', writes to 'transaction_history'.
  *
- * @param PDO   $pdo  Active database connection.
- * @param array $data Input payload containing id, status, current_stage, and remarks.
+ * @param mysqli $conn Active MySQLi database connection.
+ * @param array  $data Input payload containing id, status, and remarks.
  * @return void
  */
-function updateProcurementStatusAndStage($pdo, $data) {
+function updateProcurementStatusAndStage($conn, $data) {
     $id      = filter_var($data['id'] ?? null, FILTER_VALIDATE_INT);
     $status  = trim($data['status'] ?? '');
-    $stage   = trim($data['current_stage'] ?? '');
     $remarks = trim($data['remarks'] ?? '');
 
     if (!$id) {
         sendError('A valid procurement ID is required.', null, 422);
     }
 
-    // Fetches the current state of the procurement from the procurements table
-    $stmt = $pdo->prepare('SELECT id, reference_number, title, status, current_stage FROM procurements WHERE id = ? LIMIT 1');
-    $stmt->execute([$id]);
-    $procurement = $stmt->fetch();
+    $stmt = $conn->prepare('SELECT id, reference_no, title, status FROM procurements WHERE id = ? LIMIT 1');
+    if (!$stmt) {
+        sendError('SQL prepare error: ' . $conn->error, null, 500);
+    }
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $procurement = $result->fetch_assoc();
+    $stmt->close();
 
     if (!$procurement) {
         sendError('Procurement record not found.', null, 404);
     }
 
     $oldStatus = $procurement['status'];
-    $oldStage  = $procurement['current_stage'];
-
     $newStatus = !empty($status) ? $status : $oldStatus;
-    $newStage  = !empty($stage) ? $stage : $oldStage;
 
-    $pdo->beginTransaction();
+    $conn->begin_transaction();
 
     try {
-        // Updates status and current_stage in the procurements table
-        $updateStmt = $pdo->prepare('
+        $updateStmt = $conn->prepare('
             UPDATE procurements
             SET 
                 status = ?,
-                current_stage = ?,
                 updated_at = NOW()
             WHERE id = ?
         ');
-        $updateStmt->execute([$newStatus, $newStage, $id]);
+        if (!$updateStmt) {
+            throw new Exception('SQL prepare error: ' . $conn->error);
+        }
+        $updateStmt->bind_param('si', $newStatus, $id);
+        $updateStmt->execute();
+        $updateStmt->close();
 
-        // Formulate descriptive log notes
-        $logRemarks = !empty($remarks) ? $remarks : sprintf('Status changed from "%s" to "%s", Stage: "%s".', $oldStatus, $newStatus, $newStage);
+        $action = 'Status Changed';
+        $histRemarks = !empty($remarks) ? $remarks : sprintf('Status updated from "%s" to "%s".', $oldStatus, $newStatus);
 
-        // Inserts the state change into the transaction_history audit table
-        $histStmt = $pdo->prepare('
+        $histStmt = $conn->prepare('
             INSERT INTO transaction_history (
                 procurement_id,
                 action,
-                previous_status,
-                new_status,
+                old_value,
+                new_value,
                 remarks,
-                performed_by,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+            ) VALUES (?, ?, ?, ?, ?, NOW())
         ');
+        if (!$histStmt) {
+            throw new Exception('SQL prepare error: ' . $conn->error);
+        }
+        $histStmt->bind_param('issss', $id, $action, $oldStatus, $newStatus, $histRemarks);
+        $histStmt->execute();
+        $histStmt->close();
 
-        $histStmt->execute([
-            $id,
-            'Status / Stage Updated',
-            $oldStatus,
-            $newStatus,
-            $logRemarks,
-            'CHR Procurement Officer',
-        ]);
-
-        $pdo->commit();
+        $conn->commit();
     } catch (Exception $e) {
-        $pdo->rollBack();
+        $conn->rollback();
         sendError('Failed to update procurement status: ' . $e->getMessage(), null, 500);
     }
 }
 
 // 1. Establish database connection
-$pdo = connectDatabase();
+$conn = getDbConnection();
 
-// 2. Parse input JSON payload
+// 2. Read JSON body
 $input = getJsonInput();
 
-// 3. Update status in MySQL
-updateProcurementStatusAndStage($pdo, $input);
+// 3. Update MySQL
+updateProcurementStatusAndStage($conn, $input);
 
 sendSuccess('Procurement status updated successfully.', [
-    'procurement_id' => (int)$input['id'],
+    'procurement_id' => (int)($input['id'] ?? 0),
+    'status'         => $input['status'] ?? '',
 ]);

@@ -30,12 +30,14 @@ function formatCurrency(val) {
  */
 function getBidBadgeClass(status) {
   switch (status) {
+    case 'Selected':
     case 'Selected / Awarded':
       return 'badge badge-selected';
     case 'Under Review':
       return 'badge badge-review';
+    case 'Not Selected':
     case 'Disqualified / Rejected':
-      return 'badge badge-danger';
+      return 'badge badge-not-selected';
     case 'Submitted':
     default:
       return 'badge badge-submitted';
@@ -200,7 +202,7 @@ export default function CHRBids() {
           {/* Status Filter */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text-muted)' }}>Status:</span>
-            {['ALL', 'Submitted', 'Under Review', 'Selected / Awarded'].map((status) => (
+            {['ALL', 'Submitted', 'Under Review', 'Selected', 'Not Selected'].map((status) => (
               <button
                 key={status}
                 type="button"
@@ -275,14 +277,14 @@ export default function CHRBids() {
                             </div>
                           </td>
                           <td>
-                            <strong>{bid.bidder_name}</strong>
+                            <strong>{bid.company_name || bid.bidder_name}</strong>
                             <div style={{ fontSize: '12px', color: 'var(--color-text-subtle)' }}>
-                              Rep: {bid.representative_name}
+                              Rep: {bid.bidder_name}
                             </div>
                           </td>
                           <td>
-                            <div style={{ fontSize: '12px' }}>{bid.contact_number}</div>
-                            <div style={{ fontSize: '11px', color: 'var(--color-text-subtle)' }}>{bid.email}</div>
+                            <div style={{ fontSize: '12px' }}>{bid.contact_number || 'N/A'}</div>
+                            <div style={{ fontSize: '11px', color: 'var(--color-text-subtle)' }}>{bid.email || 'Direct Submission'}</div>
                           </td>
                           <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--color-text-main)' }}>
                             {formatCurrency(bid.bid_amount)}
