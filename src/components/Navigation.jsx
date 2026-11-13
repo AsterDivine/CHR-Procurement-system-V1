@@ -148,6 +148,7 @@ export default function Navigation({ children }) {
                 </NavLink>
                 <NavLink
                   to="/chr/procurements"
+                  end
                   className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
                 >
                   Procurement Records
@@ -273,9 +274,17 @@ export default function Navigation({ children }) {
           </header>
 
           {/* Main Semantic Body Viewport */}
-          <main className="content-body">
-            {children}
-          </main>
+          {location.pathname === '/chr/procurements' ||
+          location.pathname === '/chr/procurements/new' ||
+          location.pathname.endsWith('/edit') ? (
+            <div className="content-body">
+              {children}
+            </div>
+          ) : (
+            <main className="content-body">
+              {children}
+            </main>
+          )}
         </div>
       </div>
     </div>

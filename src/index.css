@@ -428,6 +428,32 @@ a:hover {
   background-color: #fcfdfe;
 }
 
+.gov-table caption {
+  caption-side: top;
+  text-align: left;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  background-color: #fafbfc;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.gov-table.compact-table {
+  font-size: 12px;
+}
+
+.gov-table.compact-table th {
+  padding: 8px 8px;
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: normal;
+}
+
+.gov-table.compact-table td {
+  padding: 8px 8px;
+}
+
 /* --- Form Styles --- */
 .gov-form {
   display: flex;

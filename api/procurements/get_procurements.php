@@ -5,10 +5,9 @@
  * File: api/procurements/get_procurements.php
  * =============================================================================
  * 
- * Retrieves the centralized list of all procurement records from MySQL.
- * Uses pure PHP MySQLi prepared statements.
- * Matches the schema: table `procurements` (reference_no, procurement_type, budget_source).
- * Supports optional filtering by status (e.g. 'Open', 'For Evaluation', 'Awarded').
+ * Pure PHP endpoint that performs a SELECT query on the MySQL `procurements` table.
+ * Sorts newest procurement records first (created_at DESC, id DESC) and returns JSON.
+ * Uses MySQLi prepared statements and centralized connection from database.php.
  */
 
 require_once __DIR__ . '/../config/cors.php';
@@ -16,14 +15,15 @@ require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/../helpers/response.php';
 
 /**
- * Fetches all procurement records matching the optional status filter from MySQL.
- * Used by: React component ProcurementTable.jsx, CHRDashboard.jsx, and BidderOpportunities.jsx.
- * Connects to: Endpoint /api/procurements/get_procurements.php
- * Database tables affected: Reads from 'procurements' and 'bids'.
+ * Fetches procurement records from the MySQL `procurements` table (newest first).
+ * Supports an optional status query parameter (?status=Open, etc.).
+ * Used by: React page ProcurementTable.jsx, CHRDashboard.jsx, and BidderOpportunities.jsx.
+ * Connects to: Endpoint GET /api/procurements/get_procurements.php
+ * Database tables affected: Reads from `procurements` and aggregates count from `bids`.
  *
- * @param mysqli $conn   Active MySQLi database connection.
- * @param string $status Optional status filter string.
- * @return array List of procurement records with formatted financial values.
+ * @param mysqli $conn   Active MySQLi database connection from getDbConnection().
+ * @param string $status Optional procurement status filter string.
+ * @return array List of procurement rows from MySQL sorted newest first.
  */
 function fetchProcurementList($conn, $status = '') {
     $sql = '
@@ -49,28 +49,35 @@ function fetchProcurementList($conn, $status = '') {
         LEFT JOIN bids b ON p.id = b.procurement_id
     ';
 
-    if (!empty($status)) {
+    if ($status !== '') {
         $sql .= ' WHERE p.status = ? ';
     }
 
-    $sql .= ' GROUP BY p.id ORDER BY p.created_at DESC ';
+    // Sort newest records first
+    $sql .= ' GROUP BY p.id ORDER BY p.created_at DESC, p.id DESC ';
 
-    // Prepare and execute query with mysqli prepared statements
+    // Prepare and execute SQL SELECT statement
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
-        sendError('SQL prepare failed: ' . $conn->error, null, 500);
+        error_log('get_procurements prepare failed: ' . $conn->error);
+        sendError('Unable to retrieve procurement records from the database.', null, 500);
     }
 
-    if (!empty($status)) {
+    if ($status !== '') {
         $stmt->bind_param('s', $status);
     }
 
-    $stmt->execute();
+    if (!$stmt->execute()) {
+        error_log('get_procurements execute failed: ' . $stmt->error);
+        $stmt->close();
+        sendError('Unable to retrieve procurement records from the database.', null, 500);
+    }
+
     $result = $stmt->get_result();
     $records = $result->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
 
-    // Format numeric data types cleanly for JSON output
+    // Normalize numeric types cleanly for JSON output
     foreach ($records as &$row) {
         $row['id']             = (int)$row['id'];
         $row['abc']            = (float)$row['abc'];
@@ -83,13 +90,13 @@ function fetchProcurementList($conn, $status = '') {
     return $records;
 }
 
-// 1. Establish database connection
+// 1. Establish MySQLi database connection
 $conn = getDbConnection();
 
-// 2. Read optional query parameters
-$statusFilter = trim($_GET['status'] ?? '');
+// 2. Read optional query parameter (?status=...)
+$statusFilter = trim((string)($_GET['status'] ?? ''));
 
-// 3. Fetch data and send JSON response
+// 3. Query MySQL `procurements` table and return JSON
 $procurements = fetchProcurementList($conn, $statusFilter);
 
 sendSuccess('Procurement records retrieved successfully.', [

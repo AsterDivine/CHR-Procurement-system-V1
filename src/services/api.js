@@ -31,7 +31,7 @@ export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:80
  * @returns {Promise<any>} Parsed response data payload from PHP.
  * @throws {Error} Descriptive error on network failure or HTTP non-2xx status.
  */
-async function sendRequest(endpoint, options = {}) {
+async function sendRequest(endpoint, options = {}, returnFullEnvelope = false) {
   const url = `${API_BASE_URL}${endpoint}`;
   const config = {
     ...options,
@@ -68,6 +68,10 @@ async function sendRequest(endpoint, options = {}) {
     throw error;
   }
 
+  if (returnFullEnvelope) {
+    return data;
+  }
+
   return data.data;
 }
 
@@ -75,9 +79,9 @@ async function sendRequest(endpoint, options = {}) {
  * Loads all procurement records from the PHP backend, with optional status filter.
  * Used by: ProcurementTable.jsx, CHRDashboard.jsx, and BidderOpportunities.jsx.
  * Connects to: Endpoint /api/procurements/get_procurements.php
- * Database tables affected: Reads from 'procurements', 'bids', and 'procurement_items'.
+ * Database tables affected: Reads from 'procurements' and 'bids'.
  *
- * @param {string} status - Optional status filter (e.g. 'Published / Open', 'Awarded').
+ * @param {string} status - Optional status filter (e.g. 'Open', 'Awarded').
  * @returns {Promise<Array>} List of procurement objects from MySQL.
  */
 export async function loadProcurements(status = '') {
@@ -87,10 +91,10 @@ export async function loadProcurements(status = '') {
 }
 
 /**
- * Loads a single procurement record with specification line items, submitted bids, and audit trail.
+ * Loads a single procurement record, submitted bids, and audit trail.
  * Used by: ProcurementDetails.jsx and ProcurementForm.jsx (Edit Mode).
  * Connects to: Endpoint /api/procurements/get_procurement.php?id=X
- * Database tables affected: Reads from 'procurements', 'procurement_items', 'bids', and 'transaction_history'.
+ * Database tables affected: Reads from 'procurements', 'bids', and 'transaction_history'.
  *
  * @param {number|string} id - Procurement primary key ID in MySQL.
  * @returns {Promise<object>} Complete procurement detail object.
@@ -101,39 +105,55 @@ export async function loadProcurementDetails(id) {
 }
 
 /**
- * Creates a new master procurement record and its attached item specifications.
+ * Creates a new procurement record in the centralized MySQL database.
  * Used by: ProcurementForm.jsx (Create Mode).
  * Connects to: Endpoint /api/procurements/create_procurement.php
- * Database tables affected: Writes to 'procurements', 'procurement_items', and 'transaction_history'.
+ * Database tables affected: Writes to 'procurements' and 'transaction_history'.
  *
- * @param {object} payload - Procurement fields (reference_number, title, abc, deadline, etc.) and items array.
- * @returns {Promise<object>} Result containing the new procurement_id.
+ * @param {object} payload - Procurement fields (reference_no, title, abc, deadline, etc.).
+ * @returns {Promise<object>} Result containing success, message, and procurement_id.
  */
 export async function createProcurement(payload) {
-  const data = await sendRequest('/procurements/create_procurement.php', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  return data;
+  const envelope = await sendRequest(
+    '/procurements/create_procurement.php',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    true
+  );
+  return {
+    ...(envelope.data || {}),
+    success: envelope.success,
+    message: envelope.message,
+  };
 }
 
 /**
- * Updates an existing procurement record and replaces its line items.
+ * Updates an existing procurement record in the centralized MySQL database.
  * Used by: ProcurementForm.jsx (Edit Mode).
  * Connects to: Endpoint /api/procurements/update_procurement.php
- * Database tables affected: Updates 'procurements', writes to 'procurement_items' and 'transaction_history'.
+ * Database tables affected: Updates 'procurements' and inserts into 'transaction_history'.
  *
- * @param {object} payload - Updated procurement fields including id and items array.
- * @returns {Promise<object>} Result confirmation.
+ * @param {object} payload - Updated procurement fields including id.
+ * @returns {Promise<object>} Result containing success, message, procurement_id, and updated procurement.
  */
 export async function updateProcurement(payload) {
-  const data = await sendRequest('/procurements/update_procurement.php', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  return data;
+  const envelope = await sendRequest(
+    '/procurements/update_procurement.php',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+    true
+  );
+  return {
+    ...(envelope.data || {}),
+    success: envelope.success,
+    message: envelope.message,
+  };
 }
 
 /**
